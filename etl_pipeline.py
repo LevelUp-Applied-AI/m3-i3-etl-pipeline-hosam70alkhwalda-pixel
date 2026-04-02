@@ -6,6 +6,8 @@ validates data quality, and loads results to a database table and CSV file.
 from sqlalchemy import create_engine
 import pandas as pd
 import os
+import json
+from datetime import datetime
 
 
 def extract(engine):
@@ -92,27 +94,16 @@ def transform(data_dict):
     # Final result
     result = agg.merge(top_category, on="customer_id", how="left")
 
+    # --- NEW: Outlier detection ---
+    mean_rev = result["total_revenue"].mean()
+    std_rev = result["total_revenue"].std()
+    result["is_outlier"] = result["total_revenue"] > (mean_rev + 3 * std_rev)
+
     return result
 
 
 def validate(df):
-    """Run data quality checks on the transformed DataFrame.
-
-    Checks:
-    - No nulls in customer_id or customer_name
-    - total_revenue > 0 for all customers
-    - No duplicate customer_ids
-    - total_orders > 0 for all customers
-
-    Args:
-        df: transformed customer summary DataFrame
-
-    Returns:
-        dict: {check_name: bool} for each check
-
-    Raises:
-        ValueError: if any critical check fails
-    """
+    """Run data quality checks on the transformed DataFrame."""
     checks = {
         "no_null_customer_id": df["customer_id"].notna().all(),
         "no_null_customer_name": df["customer_name"].notna().all(),
@@ -121,9 +112,12 @@ def validate(df):
         "total_orders_positive": (df["total_orders"] > 0).all(),
     }
 
-    # Print PASS / FAIL
     for name, result in checks.items():
         print(f"{name}: {'PASS' if result else 'FAIL'}")
+
+    # --- NEW: print outliers ---
+    outliers_count = df["is_outlier"].sum()
+    print(f"Outliers detected: {outliers_count}")
 
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
@@ -132,18 +126,31 @@ def validate(df):
     return checks
 
 
+def generate_quality_report(df, checks, path="output/quality_report.json"):
+    """Generate data quality report JSON."""
+
+    report = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "total_records": len(df),
+        "checks": {k: bool(v) for k, v in checks.items()},
+        "failed_checks": [k for k, v in checks.items() if not v],
+        "outliers": df[df["is_outlier"]][
+        ["customer_id", "total_revenue"]
+        ].to_dict(orient="records"),
+    }
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    with open(path, "w") as f:
+        json.dump(report, f, indent=4)
+
+    print(f"Quality report saved to {path}")
+
+
 def load(df, engine, csv_path):
-    """Load customer summary to PostgreSQL table and CSV file.
+    """Load customer summary to PostgreSQL table and CSV file."""
+    df.to_sql("customer_summary", engine, if_exists="replace", index=False)
 
-    Args:
-        df: validated customer summary DataFrame
-        engine: SQLAlchemy engine
-        csv_path: path for CSV output
-    """
-    # Save to DB (correct table name)
-    df.to_sql("customer_analytics", engine, if_exists="replace", index=False)
-
-    # Save CSV
     csv_dir = os.path.dirname(csv_path) or "."
     os.makedirs(csv_dir, exist_ok=True)
     df.to_csv(csv_path, index=False)
@@ -152,29 +159,32 @@ def load(df, engine, csv_path):
 
 
 def main():
-    """Orchestrate the ETL pipeline: extract -> transform -> validate -> load."""
+    """Orchestrate the ETL pipeline."""
+    print("Starting ETL pipeline...")
+
     database_url = os.getenv(
         "DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/amman_market",
     )
     engine = create_engine(database_url)
 
-    print(" Starting ETL pipeline...")
-
-    print(" Extracting data...")
+    print("Extracting data...")
     data = extract(engine)
 
-    print(" Transforming data...")
+    print("Transforming data...")
     transformed = transform(data)
     print(f"Rows after transform: {len(transformed)}")
 
-    print(" Validating data...")
-    validate(transformed)
+    print("Validating data...")
+    checks = validate(transformed)
 
-    print(" Loading data...")
+    print("Generating quality report...")
+    generate_quality_report(transformed, checks)
+
+    print("Loading data...")
     load(transformed, engine, "output/customer_analytics.csv")
 
-    print(" ETL pipeline completed successfully.")
+    print("ETL pipeline completed successfully.")
 
 
 if __name__ == "__main__":
