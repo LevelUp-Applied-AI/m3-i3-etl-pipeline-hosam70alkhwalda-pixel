@@ -1,0 +1,32 @@
+{
+  "source_tables": {
+    "products": "products",
+    "order_items": "order_items",
+    "orders": "orders"
+  },
+
+  "joins": [
+    ["order_items", "products", "product_id"],
+    ["order_items", "orders", "order_id"]
+  ],
+
+  "filters": [
+    {"column": "status", "op": "!=", "value": "cancelled"},
+    {"column": "quantity", "op": "<=", "value": 100}
+  ],
+
+  "calculations": [
+    {"new_column": "line_total", "formula": "quantity * unit_price"}
+  ],
+
+  "groupby": ["product_id", "name", "category"],
+
+  "aggregations": {
+    "total_sold": ["quantity", "sum"],
+    "total_revenue": ["line_total", "sum"]
+  },
+
+  "output_table": "product_analytics",
+  "output_csv": "output/product_analytics.csv",
+  "quality_report": "output/product_quality.json"
+}
