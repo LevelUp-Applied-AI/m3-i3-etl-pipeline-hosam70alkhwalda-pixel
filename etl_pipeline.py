@@ -7,7 +7,6 @@ from sqlalchemy import create_engine
 import pandas as pd
 import os
 
-
 def extract(engine):
     """Extract all source tables from PostgreSQL into DataFrames.
 
@@ -17,9 +16,18 @@ def extract(engine):
     Returns:
         dict: {"customers": df, "products": df, "orders": df, "order_items": df}
     """
-    # TODO: Implement extraction
-    pass
+    
+    customers = pd.read_sql("SELECT * FROM customers", engine)
+    products = pd.read_sql("SELECT * FROM products", engine)
+    orders = pd.read_sql("SELECT * FROM orders", engine)
+    order_items = pd.read_sql("SELECT * FROM order_items", engine)
 
+    return {
+        "customers": customers,
+        "products": products,
+        "orders": orders,
+        "order_items": order_items
+    }
 
 def transform(data_dict):
     """Transform raw data into customer-level analytics summary.
@@ -40,9 +48,50 @@ def transform(data_dict):
             customer_id, customer_name, city, total_orders,
             total_revenue, avg_order_value, top_category
     """
-    # TODO: Implement transformation
-    pass
+    # 1. JOIN tables
+    df = data_dict["order_items"] \
+        .merge(data_dict["orders"], on="order_id") \
+        .merge(data_dict["products"], on="product_id") \
+        .merge(data_dict["customers"], on="customer_id")
 
+    # 2. Compute line_total
+    df["line_total"] = df["quantity"] * df["unit_price"]
+
+    # 3. Filter cancelled orders
+    df = df[df["status"].str.lower() != "cancelled"]
+
+    # 4. Filter suspicious quantities
+    df = df[df["quantity"] <= 100]
+
+    # 5. Aggregate per customer
+    agg = (
+        df.groupby(["customer_id", "customer_name", "city"], as_index=False)
+        .agg(
+            total_orders=("order_id", "nunique"),
+            total_revenue=("line_total", "sum"),
+        )
+    )
+
+    # Correct avg_order_value
+    agg["avg_order_value"] = agg["total_revenue"] / agg["total_orders"]
+
+    # Top category per customer
+    category_revenue = (
+        df.groupby(["customer_id", "category"], as_index=False)["line_total"]
+        .sum()
+        .sort_values(["customer_id", "line_total"], ascending=[True, False])
+    )
+
+    top_category = category_revenue.drop_duplicates(subset=["customer_id"])
+    top_category = top_category.rename(columns={"category": "top_category"})[
+        ["customer_id", "top_category"]
+    ]
+
+    # Final result
+    result = agg.merge(top_category, on="customer_id", how="left")
+    
+    
+    return result
 
 def validate(df):
     """Run data quality checks on the transformed DataFrame.
@@ -62,9 +111,23 @@ def validate(df):
     Raises:
         ValueError: if any critical check fails
     """
-    # TODO: Implement validation
-    pass
+    checks = {
+        "no_null_customer_id": df["customer_id"].notna().all(),
+        "no_null_customer_name": df["customer_name"].notna().all(),
+        "total_revenue_positive": (df["total_revenue"] > 0).all(),
+        "no_duplicate_customer_id": not df["customer_id"].duplicated().any(),
+        "total_orders_positive": (df["total_orders"] > 0).all(),
+    }
 
+    # Print PASS / FAIL
+    for name, result in checks.items():
+        print(f"{name}: {'PASS' if result else 'FAIL'}")
+
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        raise ValueError(f"Validation failed: {', '.join(failed)}")
+
+    return checks
 
 def load(df, engine, csv_path):
     """Load customer summary to PostgreSQL table and CSV file.
@@ -74,20 +137,40 @@ def load(df, engine, csv_path):
         engine: SQLAlchemy engine
         csv_path: path for CSV output
     """
-    # TODO: Implement loading
-    pass
+    # Save to DB (correct table name)
+    df.to_sql("customer_analytics", engine, if_exists="replace", index=False)
 
+    # Save CSV
+    csv_dir = os.path.dirname(csv_path) or "."
+    os.makedirs(csv_dir, exist_ok=True)
+    df.to_csv(csv_path, index=False)
+
+    print(f"Loaded {len(df)} rows.")
 
 def main():
     """Orchestrate the ETL pipeline: extract -> transform -> validate -> load."""
-    # TODO: Implement main orchestration
-    # 1. Create engine from DATABASE_URL env var (or default)
-    # 2. Extract
-    # 3. Transform
-    # 4. Validate
-    # 5. Load to customer_summary table and output/customer_analytics.csv
-    pass
+    database_url = os.getenv(
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/amman_market",
+    )
+    engine = create_engine(database_url)
 
+    print(" Starting ETL pipeline...")
+
+    print(" Extracting data...")
+    data = extract(engine)
+
+    print(" Transforming data...")
+    transformed = transform(data)
+    print(f"Rows after transform: {len(transformed)}")
+
+    print(" Validating data...")
+    validate(transformed)
+
+    print(" Loading data...")
+    load(transformed, engine, "output/customer_analytics.csv")
+
+    print(" ETL pipeline completed successfully.")
 
 if __name__ == "__main__":
     main()

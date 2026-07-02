@@ -1,0 +1,50 @@
+{
+  "source_tables": {
+    "customers": "customers",
+    "orders": "orders",
+    "order_items": "order_items",
+    "products": "products"
+  },
+
+  "joins": [
+    ["order_items", "orders", "order_id"],
+    ["orders", "customers", "customer_id"],
+    ["order_items", "products", "product_id"]
+  ],
+
+  "filters": [
+    {"column": "status", "op": "!=", "value": "cancelled"},
+    {"column": "quantity", "op": "<=", "value": 100}
+  ],
+
+  "calculations": [
+    {"new_column": "line_total", "formula": "quantity * unit_price"}
+  ],
+
+  "groupby": ["customer_id", "customer_name", "city"],
+
+  "aggregations": {
+    "total_orders": ["order_id", "nunique"],
+    "total_revenue": ["line_total", "sum"]
+  },
+
+  "post_calculations": [
+    {
+      "new_column": "avg_order_value",
+      "formula": "total_revenue / total_orders"
+    }
+  ],
+
+  "top_category": {
+    "category_col": "category",
+    "value_col": "line_total"
+  },
+
+  "outliers": {
+    "column": "total_revenue"
+  },
+
+  "output_table": "customer_analytics",
+  "output_csv": "output/customer_analytics.csv",
+  "quality_report": "output/customer_quality.json"
+}
